@@ -10,6 +10,10 @@ GAMMA = "https://gamma-api.polymarket.com"
 
 TICK = 60
 
+# Paper buy: both must hold vs prior tick (see README). Loosened slightly for more fills.
+BUY_MIN_IMBALANCE = 0.55
+BUY_MIN_PRICE_DELTA = 0.015
+
 latest_prices = {}
 
 
@@ -62,7 +66,10 @@ async def monitor(slug: str, _state: dict, client: httpx.AsyncClient):
                         f"Imbalance: {d['imbalance']:.2f}"
                     )
 
-                if abs(d["imbalance"]) > 0.6 and abs(d["price_delta"]) > 0.02:
+                if (
+                    abs(d["imbalance"]) > BUY_MIN_IMBALANCE
+                    and abs(d["price_delta"]) > BUY_MIN_PRICE_DELTA
+                ):
                     side = "YES" if d["imbalance"] > 0 else "NO"
                     price = current.yes_price if side == "YES" else (1.0 - current.yes_price)
                     portfolio_value = await estimate_portfolio_value(get_current_price)
