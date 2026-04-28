@@ -1,4 +1,7 @@
 import asyncio
+import logging
+from datetime import datetime, timezone
+
 import httpx
 from db import init_db
 from portfolio import paper_buy, estimate_portfolio_value
@@ -95,12 +98,35 @@ async def monitor(slug: str, _state: dict, client: httpx.AsyncClient):
 
 
 async def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     await init_db()
 
     async with httpx.AsyncClient(timeout=15) as client:
         markets = await get_top_market_slugs(client, limit=10)
         if not markets:
             raise SystemExit("No markets returned from Gamma; check API or try again later.")
+
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        logging.info(
+            "Hermes bot running — %d markets, tick=%ds, buy thresholds imbalance>%s price_delta>%s",
+            len(markets),
+            TICK,
+            BUY_MIN_IMBALANCE,
+            BUY_MIN_PRICE_DELTA,
+        )
+
+        await send_alert(
+            f"✅ Hermes bot started\n"
+            f"Time (UTC): {started_at}\n"
+            f"Markets: {len(markets)} (top volume)\n"
+            f"Tick: {TICK}s\n"
+            f"Buy when imbalance>{BUY_MIN_IMBALANCE} and |price_delta|>{BUY_MIN_PRICE_DELTA}"
+        )
 
         states = {s: {} for s in markets}
 
