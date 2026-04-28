@@ -1,8 +1,19 @@
+import json
 import time
 from dataclasses import dataclass
 
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
+
+
+def _clob_token_ids(market: dict) -> list[str]:
+    """Gamma often returns clobTokenIds as a JSON-encoded string, not a list."""
+    raw = market.get("clobTokenIds")
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return list(raw)
 
 
 @dataclass
@@ -22,7 +33,11 @@ async def fetch_snapshot(client, slug: str) -> MarketSnapshot:
         raise ValueError(f"No market found for slug: {slug}")
 
     market = markets[0]
-    token_id = market["clobTokenIds"][0]
+    token_ids = _clob_token_ids(market)
+    if not token_ids:
+        raise ValueError(f"No clobTokenIds for slug: {slug}")
+
+    token_id = token_ids[0]
 
     book = (await client.get(f"{CLOB}/book?token_id={token_id}")).json()
 
