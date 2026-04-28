@@ -10,6 +10,10 @@ MAX_SPREAD = 0.04
 # Require this many consecutive qualifying ticks (each TICK seconds apart)
 SIGNAL_CONFIRM_TICKS = 2
 
+# Exit: open positions when marked price moves this far vs entry (paper / backtest).
+EXIT_TAKE_PROFIT_MULT = 1.12
+EXIT_STOP_LOSS_MULT = 0.88
+
 # Portfolio caps
 MAX_OPEN_POSITIONS = 5
 MAX_POSITIONS_PER_TOPIC = 2

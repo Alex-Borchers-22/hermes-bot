@@ -60,4 +60,39 @@ async def init_db():
                 (1000.0, 1000.0, now_iso())
             )
 
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS market_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            yes_price REAL NOT NULL,
+            bid_size REAL NOT NULL,
+            ask_size REAL NOT NULL,
+            spread REAL NOT NULL
+        )
+        """)
+
+        await db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_market_snapshots_slug_ts
+        ON market_snapshots(slug, ts)
+        """)
+
+        await db.commit()
+
+
+async def record_snapshot(snapshot):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            INSERT INTO market_snapshots (
+                slug, ts, yes_price, bid_size, ask_size, spread
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            snapshot.slug,
+            now_iso(),
+            snapshot.yes_price,
+            snapshot.bid_size,
+            snapshot.ask_size,
+            snapshot.spread,
+        ))
         await db.commit()

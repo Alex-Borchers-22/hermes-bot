@@ -3,7 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
-from db import init_db
+from db import init_db, record_snapshot
 from markets import load_candidate_markets
 from portfolio import (
     count_open_positions,
@@ -20,6 +20,8 @@ from strategy import (
     BUY_MIN_PRICE_DELTA,
     CANDIDATE_MARKETS_MAX,
     CANDIDATE_MARKETS_MIN,
+    EXIT_STOP_LOSS_MULT,
+    EXIT_TAKE_PROFIT_MULT,
     MAX_OPEN_POSITIONS,
     MAX_POSITIONS_PER_TOPIC,
     MAX_SPREAD,
@@ -27,10 +29,6 @@ from strategy import (
 )
 
 TICK = 60
-
-# Exit open positions when marked price moves this far vs entry (paper demo defaults).
-EXIT_TAKE_PROFIT_MULT = 1.12
-EXIT_STOP_LOSS_MULT = 0.88
 
 latest_prices = {}
 
@@ -50,6 +48,7 @@ async def monitor(
     while True:
         try:
             current = await fetch_snapshot(client, slug)
+            await record_snapshot(current)
             latest_prices[slug] = current.yes_price
 
             pos = await get_open_position_by_slug(slug)

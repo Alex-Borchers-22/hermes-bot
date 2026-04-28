@@ -26,11 +26,83 @@
 
 ---
 
+## Historical snapshots & backtesting (collect your own data)
+
+This is the realistic path to validate rules before paying for third-party historical order books.
+
+**What gets stored:** On each poll (same cadence as `TICK` in `main.py`), after `fetch_snapshot`, the bot inserts into SQLite table **`market_snapshots`** (`slug`, `ts` UTC ISO, `yes_price`, `bid_size`, `ask_size`, `spread`). Schema and insert live in **`db.py`** (`init_db` + `record_snapshot`).
+
+**Replay:** After **7–30 days** of collection, run **`backtest.py`** against your DB. It loads snapshots for a slug in time order and replays the same logic as **`monitor`**: consecutive snapshots → `diff` → spread / imbalance / price-delta rules → streak confirms → paper-style buys; take-profit / stop-loss exits use the same multipliers as live (**`EXIT_TAKE_PROFIT_MULT` / `EXIT_STOP_LOSS_MULT`** in **`strategy.py`**). The simulator does **not** write to `paper_portfolio.db`; it only reads snapshots.
+
+```bash
+python backtest.py --slug YOUR_MARKET_SLUG
+python backtest.py --slug YOUR_MARKET_SLUG --db paper_portfolio.db -v
+```
+
+**Suggested phases**
+
+1. **Collect** snapshots for at least a week (longer is better for rare regimes).
+2. **Backtest** offline with `backtest.py`; tune **`strategy.py`** thresholds.
+3. **Iterate** parameters against stored data until metrics look acceptable.
+4. **Paper trade live** again with revised settings and compare to replay expectations.
+
+Entry/exit and screening knobs live in **`strategy.py`** so one file drives live trading and offline replay.
+
+---
+
 ## Future plans
 
 - **Daily review:** Intentionally make time to scan `transactions` and the hourly Telegram history; optionally add a small **CLI or report script** that groups fills by day and by slug.
-- **Evolving the strategy:** Tune thresholds (e.g. `0.6` / `0.02` / `0.05` alerts), add **exits** (take-profit / stop / time-based), use **per-market** or **volatility-adjusted** rules, and refine **NO-side pricing** using the actual NO token book when needed.
+- **Evolving the strategy:** Tune thresholds in **`strategy.py`**, use **per-market** or **volatility-adjusted** rules, and refine **NO-side pricing** using the actual NO token book when needed.
 - **Real capital:** After paper results are trusted, size live trades with strict limits and a separate risk review (keys, account safeguards, and legal/compliance in your jurisdiction).
 - **Execution automation via Polymarket:** Replace `paper_buy` with **CLOB or official API** order placement (limits, idempotency, error handling, retries), with **separate** paper vs. live config and a clear “kill switch.”
 
 This architecture (SQLite ledger + mark-to-market + rules + external alerts) is a deliberate **staging ground** before touching real trading infrastructure.
+
+---
+
+## Ubuntu: restart the bot and dashboard
+
+Paths and unit names depend on how you deployed (adjust to match your setup). Typical pattern: **two** processes — **`main.py`** (bot) and **`uvicorn`** for **`dashboard.py`**.
+
+**systemd (replace unit names with yours, e.g. from `/etc/systemd/system/`):**
+
+```bash
+sudo systemctl restart hermes-bot
+sudo systemctl status hermes-bot
+
+sudo systemctl restart hermes-dashboard
+sudo systemctl status hermes-dashboard
+```
+
+View logs:
+
+```bash
+sudo journalctl -u hermes-bot -f
+sudo journalctl -u hermes-dashboard -f
+```
+
+After editing a unit file: `sudo systemctl daemon-reload` then restart the service.
+
+If you are **not** using systemd, restart whatever supervises the same commands (Docker, Supervisor, `screen`/`tmux`, etc.).
+
+---
+
+## Dashboard URL (Droplet)
+
+The FastAPI app is **`dashboard.py`**. When bound to all interfaces (as in the module docstring), open a browser to:
+
+`http://[drop-ip]:8000`
+
+Replace **`[drop-ip]`** with your Droplet’s (or any VPS) public IPv4 address—for example `http://203.0.113.45:8000`.
+
+- Allow **TCP port 8000** in the cloud provider’s firewall and/or **`ufw`** on the VM (`sudo ufw allow 8000/tcp` then `sudo ufw reload`) if traffic is blocked.
+- Binding `0.0.0.0` exposes the UI to the network; restrict by firewall/VPN if the host is on the public internet.
+
+**Local-only alternative (SSH tunnel from your machine):**
+
+```bash
+ssh -L 8000:localhost:8000 user@YOUR_DROPLET_PUBLIC_IP
+```
+
+Then open **http://localhost:8000** on your laptop.
