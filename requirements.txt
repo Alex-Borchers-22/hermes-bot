@@ -2,3 +2,5 @@ httpx==0.28.1
 aiosqlite==0.22.1
 python-telegram-bot==22.7
 python-dotenv==1.2.2
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
