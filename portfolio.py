@@ -1,5 +1,6 @@
 import aiosqlite
 from db import DB_PATH, now_iso
+from strategy import MAX_OPEN_POSITIONS, MAX_POSITIONS_PER_TOPIC
 
 
 MIN_POSITION_PCT = 0.05
@@ -15,7 +16,7 @@ async def get_cash():
 async def get_open_positions():
     async with aiosqlite.connect(DB_PATH) as db:
         rows = await db.execute_fetchall("""
-            SELECT id, slug, side, entry_price, shares, cost, opened_at
+            SELECT id, slug, side, entry_price, shares, cost, opened_at, topic
             FROM positions
             WHERE closed_at IS NULL
         """)
@@ -29,7 +30,7 @@ async def estimate_portfolio_value(price_lookup):
     unrealized = 0.0
 
     for pos in positions:
-        _, slug, side, entry_price, shares, cost, _ = pos
+        _, slug, side, entry_price, shares, cost, _, _topic = pos
         current_price = await price_lookup(slug)
 
         if current_price is None:
@@ -63,16 +64,42 @@ async def already_holding(slug):
 async def get_open_position_by_slug(slug):
     async with aiosqlite.connect(DB_PATH) as db:
         rows = await db.execute_fetchall("""
-            SELECT id, slug, side, entry_price, shares, cost, opened_at
+            SELECT id, slug, side, entry_price, shares, cost, opened_at, topic
             FROM positions
             WHERE slug = ? AND closed_at IS NULL
         """, (slug,))
         return rows[0] if rows else None
 
 
-async def paper_buy(slug, side, price, portfolio_value, reason):
+async def count_open_positions() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        rows = await db.execute_fetchall(
+            "SELECT COUNT(*) FROM positions WHERE closed_at IS NULL"
+        )
+        return int(rows[0][0])
+
+
+async def count_open_positions_in_topic(topic: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        rows = await db.execute_fetchall(
+            """
+            SELECT COUNT(*) FROM positions
+            WHERE closed_at IS NULL AND topic = ?
+            """,
+            (topic,),
+        )
+        return int(rows[0][0])
+
+
+async def paper_buy(slug, side, price, portfolio_value, reason, topic: str):
     if await already_holding(slug):
         return False, "Already holding"
+
+    if await count_open_positions() >= MAX_OPEN_POSITIONS:
+        return False, "Max open positions"
+
+    if await count_open_positions_in_topic(topic) >= MAX_POSITIONS_PER_TOPIC:
+        return False, "Max positions for topic"
 
     cash = await get_cash()
     pct = position_pct_from_performance(portfolio_value)
@@ -88,10 +115,10 @@ async def paper_buy(slug, side, price, portfolio_value, reason):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO positions (
-                slug, side, entry_price, shares, cost, opened_at
+                slug, side, entry_price, shares, cost, opened_at, topic
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (slug, side, price, shares, notional, now_iso()))
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (slug, side, price, shares, notional, now_iso(), topic))
 
         await db.execute("""
             INSERT INTO transactions (

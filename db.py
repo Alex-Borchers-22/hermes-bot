@@ -34,6 +34,10 @@ async def init_db():
         )
         """)
 
+        cols = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(positions)")}
+        if "topic" not in cols:
+            await db.execute("ALTER TABLE positions ADD COLUMN topic TEXT")
+
         await db.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
