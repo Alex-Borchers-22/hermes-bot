@@ -4,10 +4,15 @@ from datetime import datetime, timezone
 
 import httpx
 from db import init_db
-from portfolio import paper_buy, estimate_portfolio_value
-from snapshot import MarketSnapshot, fetch_snapshot, diff
+from portfolio import (
+    estimate_portfolio_value,
+    get_open_position_by_slug,
+    paper_buy,
+    paper_sell,
+)
+from snapshot import fetch_snapshot, diff
 from alerts import send_alert
-from summary import hourly_summary
+from summary import hourly_summary, send_portfolio_summary
 
 GAMMA = "https://gamma-api.polymarket.com"
 
@@ -16,6 +21,10 @@ TICK = 60
 # Paper buy: both must hold vs prior tick (see README). Loosened slightly for more fills.
 BUY_MIN_IMBALANCE = 0.55
 BUY_MIN_PRICE_DELTA = 0.015
+
+# Exit open positions when marked price moves this far vs entry (paper demo defaults).
+EXIT_TAKE_PROFIT_MULT = 1.12
+EXIT_STOP_LOSS_MULT = 0.88
 
 latest_prices = {}
 
@@ -49,25 +58,37 @@ async def monitor(slug: str, _state: dict, client: httpx.AsyncClient):
             current = await fetch_snapshot(client, slug)
             latest_prices[slug] = current.yes_price
 
+            pos = await get_open_position_by_slug(slug)
+            if pos:
+                _, _, side, entry_price, _shares, _cost, _ = pos
+                mark = (
+                    current.yes_price
+                    if side == "YES"
+                    else (1.0 - current.yes_price)
+                )
+                tp_hit = mark >= entry_price * EXIT_TAKE_PROFIT_MULT
+                sl_hit = mark <= entry_price * EXIT_STOP_LOSS_MULT
+                if tp_hit or sl_hit:
+                    portfolio_value = await estimate_portfolio_value(
+                        get_current_price
+                    )
+                    reason = (
+                        f"take-profit (>={EXIT_TAKE_PROFIT_MULT:.2f}× entry)"
+                        if tp_hit
+                        else f"stop-loss (<={EXIT_STOP_LOSS_MULT:.2f}× entry)"
+                    )
+                    sold, sell_msg = await paper_sell(
+                        slug,
+                        mark,
+                        portfolio_value,
+                        reason,
+                    )
+                    if sold:
+                        await send_alert(f"🧪 PAPER SELL\n{sell_msg}")
+                        await send_portfolio_summary(get_current_price)
+
             if previous:
                 d = diff(previous, current)
-
-                if abs(d["price_delta"]) >= 0.05:
-                    await send_alert(
-                        f"PRICE MOVE\n"
-                        f"Market: {slug}\n"
-                        f"Price delta: {d['price_delta']:.3f}\n"
-                        f"Current YES price: {current.yes_price:.3f}"
-                    )
-
-                if abs(d["imbalance"]) >= 0.6:
-                    direction = "YES pressure" if d["imbalance"] > 0 else "NO pressure"
-                    await send_alert(
-                        f"ORDER BOOK IMBALANCE\n"
-                        f"Market: {slug}\n"
-                        f"Direction: {direction}\n"
-                        f"Imbalance: {d['imbalance']:.2f}"
-                    )
 
                 if (
                     abs(d["imbalance"]) > BUY_MIN_IMBALANCE
@@ -88,6 +109,7 @@ async def monitor(slug: str, _state: dict, client: httpx.AsyncClient):
                     )
                     if bought:
                         await send_alert(f"🧪 PAPER BUY\n{buy_msg}")
+                        await send_portfolio_summary(get_current_price)
 
             previous = current
 
