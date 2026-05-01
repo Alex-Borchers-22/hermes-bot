@@ -31,6 +31,20 @@ from strategy import (
 )
 
 
+@dataclass(frozen=True)
+class ReplayParams:
+    """Knobs mirrored from `strategy` for replay / optimization (immutable)."""
+
+    buy_min_imbalance: float = BUY_MIN_IMBALANCE
+    buy_min_price_delta: float = BUY_MIN_PRICE_DELTA
+    max_spread: float = MAX_SPREAD
+    signal_confirm_ticks: int = SIGNAL_CONFIRM_TICKS
+    exit_take_profit_mult: float = EXIT_TAKE_PROFIT_MULT
+    exit_stop_loss_mult: float = EXIT_STOP_LOSS_MULT
+    max_open_positions: int = MAX_OPEN_POSITIONS
+    max_positions_per_topic: int = MAX_POSITIONS_PER_TOPIC
+
+
 @dataclass
 class _SimPosition:
     slug: str
@@ -44,9 +58,10 @@ class _SimPosition:
 class SimPortfolio:
     """Minimal mirror of paper_buy / paper_sell constraints (sync, in-memory)."""
 
-    def __init__(self, starting_cash: float = 1000.0) -> None:
+    def __init__(self, starting_cash: float = 1000.0, params: ReplayParams | None = None) -> None:
         self.cash = starting_cash
         self.starting_value = starting_cash
+        self._p = params if params is not None else ReplayParams()
         self._by_slug: dict[str, _SimPosition] = {}
 
     def _count_open(self) -> int:
@@ -79,10 +94,10 @@ class SimPortfolio:
         if slug in self._by_slug:
             return False, "Already holding"
 
-        if self._count_open() >= MAX_OPEN_POSITIONS:
+        if self._count_open() >= self._p.max_open_positions:
             return False, "Max open positions"
 
-        if self._count_topic(topic) >= MAX_POSITIONS_PER_TOPIC:
+        if self._count_topic(topic) >= self._p.max_positions_per_topic:
             return False, "Max positions for topic"
 
         pv = self.estimate_value(yes_by_slug)
@@ -150,9 +165,11 @@ def replay(
     topic: str,
     snapshots: list[MarketSnapshot],
     verbose: bool = False,
+    params: ReplayParams | None = None,
 ) -> dict:
     """Walk snapshots with the same streak / TP-SL logic as main.monitor."""
-    port = SimPortfolio()
+    p = params if params is not None else ReplayParams()
+    port = SimPortfolio(params=p)
     state = {"yes_streak": 0, "no_streak": 0}
     previous: MarketSnapshot | None = None
     yes_prices: dict[str, float] = {}
@@ -170,8 +187,8 @@ def replay(
                 if pos.side == "YES"
                 else (1.0 - current.yes_price)
             )
-            tp_hit = mark >= pos.entry_price * EXIT_TAKE_PROFIT_MULT
-            sl_hit = mark <= pos.entry_price * EXIT_STOP_LOSS_MULT
+            tp_hit = mark >= pos.entry_price * p.exit_take_profit_mult
+            sl_hit = mark <= pos.entry_price * p.exit_stop_loss_mult
             if tp_hit or sl_hit:
                 ok, msg = port.try_sell(slug, mark, yes_prices)
                 if ok:
@@ -182,27 +199,27 @@ def replay(
         elif previous:
             d = diff(previous, current)
 
-            if current.spread > MAX_SPREAD:
+            if current.spread > p.max_spread:
                 state["yes_streak"] = 0
                 state["no_streak"] = 0
             else:
                 if (
-                    d["imbalance"] > BUY_MIN_IMBALANCE
-                    and d["price_delta"] > BUY_MIN_PRICE_DELTA
+                    d["imbalance"] > p.buy_min_imbalance
+                    and d["price_delta"] > p.buy_min_price_delta
                 ):
                     state["yes_streak"] += 1
                 else:
                     state["yes_streak"] = 0
 
                 if (
-                    d["imbalance"] < -BUY_MIN_IMBALANCE
-                    and d["price_delta"] < -BUY_MIN_PRICE_DELTA
+                    d["imbalance"] < -p.buy_min_imbalance
+                    and d["price_delta"] < -p.buy_min_price_delta
                 ):
                     state["no_streak"] += 1
                 else:
                     state["no_streak"] = 0
 
-                if state["yes_streak"] == SIGNAL_CONFIRM_TICKS:
+                if state["yes_streak"] == p.signal_confirm_ticks:
                     ok, msg = port.try_buy(
                         slug,
                         "YES",
@@ -217,7 +234,7 @@ def replay(
                         if verbose:
                             print(f"BUY  {msg}")
 
-                elif state["no_streak"] == SIGNAL_CONFIRM_TICKS:
+                elif state["no_streak"] == p.signal_confirm_ticks:
                     ok, msg = port.try_buy(
                         slug,
                         "NO",

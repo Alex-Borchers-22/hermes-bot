@@ -1,18 +1,21 @@
 """Trading / screening knobs (paper trading — tune freely)."""
 
 # Entry signal (aligned momentum — see monitor loop)
-BUY_MIN_IMBALANCE = 0.65
-BUY_MIN_PRICE_DELTA = 0.02
+# Exits match a strong optimizer draw; entry thresholds are looser than that draw to force more buys.
+# (Optimizer had buy_min_imbalance 0.4166 / buy_min_price_delta 0.0003 — lowered here.)
+BUY_MIN_IMBALANCE = 0.24
+BUY_MIN_PRICE_DELTA = 0.00012
 
-# Liquidity / execution quality
-MAX_SPREAD = 0.04
+# Stored snapshots often have spread ~0.57–1.0; optimizer suggested 0.5288 but that blocks every tick.
+# 1.0 effectively disables the spread gate for paper; tighten for live tight books.
+MAX_SPREAD = 1.0
 
 # Require this many consecutive qualifying ticks (each TICK seconds apart)
-SIGNAL_CONFIRM_TICKS = 2
+SIGNAL_CONFIRM_TICKS = 1
 
 # Exit: open positions when marked price moves this far vs entry (paper / backtest).
-EXIT_TAKE_PROFIT_MULT = 1.12
-EXIT_STOP_LOSS_MULT = 0.88
+EXIT_TAKE_PROFIT_MULT = 1.0649
+EXIT_STOP_LOSS_MULT = 0.7446
 
 # Portfolio caps
 MAX_OPEN_POSITIONS = 5
