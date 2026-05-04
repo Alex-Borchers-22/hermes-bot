@@ -37,6 +37,12 @@ async def init_db():
         cols = {row[1] for row in await db.execute_fetchall("PRAGMA table_info(positions)")}
         if "topic" not in cols:
             await db.execute("ALTER TABLE positions ADD COLUMN topic TEXT")
+        if "condition_id" not in cols:
+            await db.execute("ALTER TABLE positions ADD COLUMN condition_id TEXT")
+        if "settlement_tx_hash" not in cols:
+            await db.execute("ALTER TABLE positions ADD COLUMN settlement_tx_hash TEXT")
+        if "settlement_log_index" not in cols:
+            await db.execute("ALTER TABLE positions ADD COLUMN settlement_log_index INTEGER")
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS transactions (

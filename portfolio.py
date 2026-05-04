@@ -6,6 +6,12 @@ from strategy import MAX_OPEN_POSITIONS, MAX_POSITIONS_PER_TOPIC
 MIN_POSITION_PCT = 0.05
 MAX_POSITION_PCT = 0.10
 
+_POS_SELECT = """
+    SELECT id, slug, side, entry_price, shares, cost, opened_at, topic,
+           condition_id, settlement_tx_hash, settlement_log_index
+    FROM positions
+"""
+
 
 async def get_cash():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -15,11 +21,9 @@ async def get_cash():
 
 async def get_open_positions():
     async with aiosqlite.connect(DB_PATH) as db:
-        rows = await db.execute_fetchall("""
-            SELECT id, slug, side, entry_price, shares, cost, opened_at, topic
-            FROM positions
-            WHERE closed_at IS NULL
-        """)
+        rows = await db.execute_fetchall(
+            f"{_POS_SELECT} WHERE closed_at IS NULL"
+        )
         return rows
 
 
@@ -30,7 +34,7 @@ async def estimate_portfolio_value(price_lookup):
     unrealized = 0.0
 
     for pos in positions:
-        _, slug, side, entry_price, shares, cost, _, _topic = pos
+        _, slug, side, entry_price, shares, cost, _, _topic = pos[:8]
         yes_mid = await price_lookup(slug)
 
         if yes_mid is None:
@@ -65,11 +69,10 @@ async def already_holding(slug):
 
 async def get_open_position_by_slug(slug):
     async with aiosqlite.connect(DB_PATH) as db:
-        rows = await db.execute_fetchall("""
-            SELECT id, slug, side, entry_price, shares, cost, opened_at, topic
-            FROM positions
-            WHERE slug = ? AND closed_at IS NULL
-        """, (slug,))
+        rows = await db.execute_fetchall(
+            f"{_POS_SELECT} WHERE slug = ? AND closed_at IS NULL",
+            (slug,),
+        )
         return rows[0] if rows else None
 
 
@@ -93,7 +96,16 @@ async def count_open_positions_in_topic(topic: str) -> int:
         return int(rows[0][0])
 
 
-async def paper_buy(slug, side, price, portfolio_value, reason, topic: str):
+async def paper_buy(
+    slug,
+    side,
+    price,
+    portfolio_value,
+    reason,
+    topic: str,
+    *,
+    condition_id: str | None = None,
+):
     if await already_holding(slug):
         return False, "Already holding"
 
@@ -114,13 +126,16 @@ async def paper_buy(slug, side, price, portfolio_value, reason, topic: str):
 
     shares = notional / price
 
+    cid = str(condition_id).strip() if condition_id else None
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO positions (
-                slug, side, entry_price, shares, cost, opened_at, topic
+                slug, side, entry_price, shares, cost, opened_at, topic,
+                condition_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (slug, side, price, shares, notional, now_iso(), topic))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (slug, side, price, shares, notional, now_iso(), topic, cid))
 
         await db.execute("""
             INSERT INTO transactions (
@@ -146,7 +161,10 @@ async def paper_sell(slug, exit_price, portfolio_value, reason):
     if not pos:
         return False, "No open position"
 
-    pos_id, _slug, side, _entry_price, shares, cost, _opened = pos
+    pos_id = pos[0]
+    side = pos[2]
+    shares = pos[4]
+    cost = pos[5]
     proceeds = shares * exit_price
     realized_pnl = proceeds - cost
 
@@ -187,3 +205,39 @@ async def paper_sell(slug, exit_price, portfolio_value, reason):
         f"Sold ${proceeds:.2f} of {slug} ({side}) at {exit_price:.3f} "
         f"(realized P/L ${realized_pnl:+,.2f})",
     )
+
+
+async def update_open_position_condition_id(slug: str, condition_id: str) -> int:
+    """Return number of rows updated (0 or 1)."""
+    cid = str(condition_id).strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE positions
+            SET condition_id = ?
+            WHERE slug = ? AND closed_at IS NULL
+            """,
+            (cid, slug),
+        )
+        await db.commit()
+        return cur.rowcount if cur.rowcount is not None else 0
+
+
+async def update_open_position_settlement_chain(
+    slug: str,
+    settlement_tx_hash: str,
+    settlement_log_index: int,
+) -> int:
+    """Attach optional Polygon receipt coordinates for chain fallback settlement."""
+    txh = str(settlement_tx_hash).strip()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE positions
+            SET settlement_tx_hash = ?, settlement_log_index = ?
+            WHERE slug = ? AND closed_at IS NULL
+            """,
+            (txh, int(settlement_log_index), slug),
+        )
+        await db.commit()
+        return cur.rowcount if cur.rowcount is not None else 0

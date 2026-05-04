@@ -3,6 +3,7 @@ import logging
 from datetime import datetime, timezone
 
 import httpx
+from chain_settlement import yes_price_from_chain_receipt
 from db import init_db, record_snapshot
 from markets import load_candidate_markets
 from gamma_market import fetch_gamma_market, settlement_yes_price
@@ -49,31 +50,63 @@ async def monitor(
 
     while True:
         try:
-            market = await fetch_gamma_market(client, slug)
-            if not market:
-                raise ValueError(f"No Gamma market for slug: {slug}")
+            pos_pre = await get_open_position_by_slug(slug)
+            cid = pos_pre[8] if pos_pre else None
 
-            pos = await get_open_position_by_slug(slug)
-            yes_settle = settlement_yes_price(market)
-            if pos and yes_settle is not None:
-                _, _, side, _entry_price, _shares, _cost, _, _t = pos
+            market = await fetch_gamma_market(client, slug, condition_id=cid)
+
+            yes_settle = settlement_yes_price(market) if market else None
+            from_chain = False
+            if yes_settle is None and pos_pre and pos_pre[9] and pos_pre[10] is not None:
+                yes_settle = await asyncio.to_thread(
+                    yes_price_from_chain_receipt,
+                    str(pos_pre[9]),
+                    int(pos_pre[10]),
+                )
+                from_chain = yes_settle is not None
+
+            if pos_pre and yes_settle is not None:
+                side = pos_pre[2]
                 mark = yes_settle if side == "YES" else (1.0 - yes_settle)
                 portfolio_value = await estimate_portfolio_value(
                     get_current_price
+                )
+                reason = (
+                    "market settled (chain log)"
+                    if from_chain
+                    else "market settled (gamma outcomePrices)"
                 )
                 sold, sell_msg = await paper_sell(
                     slug,
                     mark,
                     portfolio_value,
-                    "market settled (gamma outcomePrices)",
+                    reason,
                 )
                 if sold:
                     await send_alert(f"🧪 PAPER SELL\n{sell_msg}")
                     await send_portfolio_summary(get_current_price)
                 latest_prices[slug] = yes_settle
-                current = await fetch_snapshot(client, slug, market=market)
-                await record_snapshot(current)
-                previous = current
+                if market:
+                    current = await fetch_snapshot(client, slug, market=market)
+                    await record_snapshot(current)
+                    previous = current
+                else:
+                    previous = None
+                await asyncio.sleep(TICK)
+                continue
+
+            if not market:
+                if pos_pre:
+                    logging.warning(
+                        "[%s] No Gamma market (try --closed path exhausted); "
+                        "backfill condition_id or settlement tx/log if stuck open.",
+                        slug,
+                    )
+                else:
+                    logging.error(
+                        "[%s] No Gamma market for candidate slug.",
+                        slug,
+                    )
                 await asyncio.sleep(TICK)
                 continue
 
@@ -85,7 +118,8 @@ async def monitor(
             if pos:
                 state["yes_streak"] = 0
                 state["no_streak"] = 0
-                _, _, side, entry_price, _shares, _cost, _, _t = pos
+                side = pos[2]
+                entry_price = pos[3]
                 mark = (
                     current.yes_price
                     if side == "YES"
@@ -139,6 +173,7 @@ async def monitor(
                         portfolio_value = await estimate_portfolio_value(
                             get_current_price
                         )
+                        _cid = market.get("conditionId")
                         bought, buy_msg = await paper_buy(
                             slug=slug,
                             side="YES",
@@ -150,6 +185,7 @@ async def monitor(
                                 f"{SIGNAL_CONFIRM_TICKS}× confirm YES"
                             ),
                             topic=topic,
+                            condition_id=str(_cid) if _cid else None,
                         )
                         state["yes_streak"] = 0
                         state["no_streak"] = 0
@@ -161,6 +197,7 @@ async def monitor(
                         portfolio_value = await estimate_portfolio_value(
                             get_current_price
                         )
+                        _cid = market.get("conditionId")
                         bought, buy_msg = await paper_buy(
                             slug=slug,
                             side="NO",
@@ -172,6 +209,7 @@ async def monitor(
                                 f"{SIGNAL_CONFIRM_TICKS}× confirm NO"
                             ),
                             topic=topic,
+                            condition_id=str(_cid) if _cid else None,
                         )
                         state["yes_streak"] = 0
                         state["no_streak"] = 0
@@ -207,7 +245,8 @@ async def main():
         seen_slugs = {s for s, _ in candidates}
         merged: list[tuple[str, str]] = list(candidates)
         for row in open_rows:
-            _pid, slug, _side, _ep, _sh, _co, _oa, topic = row
+            slug = row[1]
+            topic = row[7]
             if slug not in seen_slugs:
                 t = topic if topic else "unclassified"
                 merged.append((slug, t))
