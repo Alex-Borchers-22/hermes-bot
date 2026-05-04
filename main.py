@@ -5,10 +5,12 @@ from datetime import datetime, timezone
 import httpx
 from db import init_db, record_snapshot
 from markets import load_candidate_markets
+from gamma_market import fetch_gamma_market, settlement_yes_price
 from portfolio import (
     count_open_positions,
     estimate_portfolio_value,
     get_open_position_by_slug,
+    get_open_positions,
     paper_buy,
     paper_sell,
 )
@@ -47,7 +49,35 @@ async def monitor(
 
     while True:
         try:
-            current = await fetch_snapshot(client, slug)
+            market = await fetch_gamma_market(client, slug)
+            if not market:
+                raise ValueError(f"No Gamma market for slug: {slug}")
+
+            pos = await get_open_position_by_slug(slug)
+            yes_settle = settlement_yes_price(market)
+            if pos and yes_settle is not None:
+                _, _, side, _entry_price, _shares, _cost, _, _t = pos
+                mark = yes_settle if side == "YES" else (1.0 - yes_settle)
+                portfolio_value = await estimate_portfolio_value(
+                    get_current_price
+                )
+                sold, sell_msg = await paper_sell(
+                    slug,
+                    mark,
+                    portfolio_value,
+                    "market settled (gamma outcomePrices)",
+                )
+                if sold:
+                    await send_alert(f"🧪 PAPER SELL\n{sell_msg}")
+                    await send_portfolio_summary(get_current_price)
+                latest_prices[slug] = yes_settle
+                current = await fetch_snapshot(client, slug, market=market)
+                await record_snapshot(current)
+                previous = current
+                await asyncio.sleep(TICK)
+                continue
+
+            current = await fetch_snapshot(client, slug, market=market)
             await record_snapshot(current)
             latest_prices[slug] = current.yes_price
 
@@ -173,14 +203,30 @@ async def main():
                 "No candidate markets after Gamma filters; relax criteria or try later."
             )
 
+        open_rows = await get_open_positions()
+        seen_slugs = {s for s, _ in candidates}
+        merged: list[tuple[str, str]] = list(candidates)
+        for row in open_rows:
+            _pid, slug, _side, _ep, _sh, _co, _oa, topic = row
+            if slug not in seen_slugs:
+                t = topic if topic else "unclassified"
+                merged.append((slug, t))
+                seen_slugs.add(slug)
+                logging.info(
+                    "Also monitoring open position not in candidate list: %s (%s)",
+                    slug,
+                    t,
+                )
+
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         n_open = await count_open_positions()
         logging.info(
-            "Hermes bot running — %d candidate markets (target %d–%d), tick=%ds, "
-            "open positions %d/%d, imbalance>%s |Δprice|>%s spread≤%s confirm=%d tick(s)",
+            "Hermes bot running — %d candidate markets (target %d–%d), %d monitor tasks "
+            "(tick=%ds), open positions %d/%d, imbalance>%s |Δprice|>%s spread≤%s confirm=%d tick(s)",
             len(candidates),
             CANDIDATE_MARKETS_MIN,
             CANDIDATE_MARKETS_MAX,
+            len(merged),
             TICK,
             n_open,
             MAX_OPEN_POSITIONS,
@@ -192,13 +238,14 @@ async def main():
 
         states = {
             slug: {"yes_streak": 0, "no_streak": 0}
-            for slug, _topic in candidates
+            for slug, _topic in merged
         }
 
         await send_alert(
             f"✅ Hermes bot started\n"
             f"Time (UTC): {started_at}\n"
-            f"Candidates: {len(candidates)} markets ({CANDIDATE_MARKETS_MIN}–{CANDIDATE_MARKETS_MAX})\n"
+            f"Candidates: {len(candidates)} markets ({CANDIDATE_MARKETS_MIN}–{CANDIDATE_MARKETS_MAX}); "
+            f"monitor tasks: {len(merged)}\n"
             f"Tick: {TICK}s\n"
             f"Portfolio cap: {MAX_OPEN_POSITIONS} open; "
             f"max {MAX_POSITIONS_PER_TOPIC} per topic (see strategy.py)\n"
@@ -210,7 +257,7 @@ async def main():
         await asyncio.gather(
             *[
                 monitor(slug, states[slug], client, topic)
-                for slug, topic in candidates
+                for slug, topic in merged
             ],
             hourly_summary(get_current_price),
         )

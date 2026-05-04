@@ -31,12 +31,14 @@ async def estimate_portfolio_value(price_lookup):
 
     for pos in positions:
         _, slug, side, entry_price, shares, cost, _, _topic = pos
-        current_price = await price_lookup(slug)
+        yes_mid = await price_lookup(slug)
 
-        if current_price is None:
-            current_price = entry_price
+        if yes_mid is None:
+            leg = entry_price
+        else:
+            leg = yes_mid if side == "YES" else (1.0 - yes_mid)
 
-        unrealized += shares * current_price
+        unrealized += shares * leg
 
     return cash + unrealized
 

@@ -71,13 +71,15 @@ class SimPortfolio:
         return sum(1 for p in self._by_slug.values() if p.topic == topic)
 
     def estimate_value(self, yes_by_slug: dict[str, float]) -> float:
-        """Match portfolio.estimate_portfolio_value: unrealized uses yes mid per slug."""
+        """Match portfolio.estimate_portfolio_value: YES mid per slug, side-aware leg."""
         unrealized = 0.0
         for slug, pos in self._by_slug.items():
             y = yes_by_slug.get(slug)
             if y is None:
-                y = pos.entry_price if pos.side == "YES" else (1.0 - pos.entry_price)
-            unrealized += pos.shares * y
+                leg = pos.entry_price if pos.side == "YES" else (1.0 - pos.entry_price)
+            else:
+                leg = y if pos.side == "YES" else (1.0 - y)
+            unrealized += pos.shares * leg
         return self.cash + unrealized
 
     def get_open(self, slug: str) -> _SimPosition | None:
