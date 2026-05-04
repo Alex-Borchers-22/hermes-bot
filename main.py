@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 
 import httpx
@@ -18,6 +19,7 @@ from portfolio import (
 from snapshot import MarketSnapshot, fetch_snapshot, diff
 from alerts import send_alert
 from summary import hourly_summary, send_portfolio_summary
+from telegram_listener import run_telegram_listener
 from strategy import (
     BUY_MIN_IMBALANCE,
     BUY_MIN_PRICE_DELTA,
@@ -293,13 +295,19 @@ async def main():
             f"{SIGNAL_CONFIRM_TICKS} consecutive ticks"
         )
 
-        await asyncio.gather(
-            *[
-                monitor(slug, states[slug], client, topic)
-                for slug, topic in merged
-            ],
-            hourly_summary(get_current_price),
-        )
+        tasks = [
+            monitor(slug, states[slug], client, topic)
+            for slug, topic in merged
+        ]
+        if os.environ.get("HOURLY_SUMMARY_ENABLED", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        ):
+            tasks.append(hourly_summary(get_current_price))
+        tasks.append(run_telegram_listener(get_current_price))
+
+        await asyncio.gather(*tasks)
 
 
 if __name__ == "__main__":
