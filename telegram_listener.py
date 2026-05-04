@@ -2,7 +2,7 @@
 Telegram command handlers (runs alongside market monitors).
 
 Commands:
-  /update — portfolio summary on demand (same numbers as former hourly digest).
+  /update — portfolio summary + each open position (marks when live prices exist).
   /help   — list commands
 
 Only TELEGRAM_CHAT_ID may trigger commands (same as alerts).
